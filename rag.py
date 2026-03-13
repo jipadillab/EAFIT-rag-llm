@@ -161,23 +161,54 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def extract_text_from_image_groq(file_bytes: bytes, api_key: str) -> str:
-    """Use Groq's vision model to OCR an image."""
-    b64 = base64.b64encode(file_bytes).decode()
+def detect_media_type(file_bytes: bytes, filename: str = "") -> str:
+    """Detect image media type from magic bytes or filename extension."""
+    if file_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    if file_bytes[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    if file_bytes[:6] in (b'GIF87a', b'GIF89a'):
+        return "image/gif"
+    if file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WEBP':
+        return "image/webp"
+    ext = filename.lower().split(".")[-1] if filename else ""
+    return {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+
+
+def extract_text_from_image_groq(file_bytes: bytes, api_key: str, filename: str = "") -> str:
+    """Use Groq's vision model to OCR an image, with model fallback."""
     from groq import Groq
+
+    media_type = detect_media_type(file_bytes, filename)
+    b64 = base64.b64encode(file_bytes).decode()
+    data_url = f"data:{media_type};base64,{b64}"
+
     client = Groq(api_key=api_key)
-    resp = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                {"type": "text", "text": "Transcribe todo el texto visible en esta imagen, manteniendo el formato original lo mejor posible."}
-            ]
-        }],
-        max_tokens=4096,
-    )
-    return resp.choices[0].message.content
+    vision_models = [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.2-11b-vision-preview",
+    ]
+    last_error = None
+    for model in vision_models:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+                        {"type": "text", "text": "Transcribe todo el texto visible en esta imagen con precisión, manteniendo el formato original. Si no hay texto, describe el contenido brevemente."}
+                    ]
+                }],
+                max_tokens=4096,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise RuntimeError(f"OCR falló con todos los modelos disponibles. Último error: {last_error}")
 
 
 @st.cache_resource(show_spinner=False)
@@ -318,17 +349,26 @@ if uploaded and api_key:
     ext = uploaded.name.split(".")[-1].lower()
 
     with st.spinner("📖 Procesando documento..."):
-        if ext == "pdf":
-            text = extract_text_from_pdf(file_bytes)
-        else:
-            text = extract_text_from_image_groq(file_bytes, api_key)
+        try:
+            if ext == "pdf":
+                text = extract_text_from_pdf(file_bytes)
+            else:
+                text = extract_text_from_image_groq(file_bytes, api_key, uploaded.name)
 
-        st.session_state.doc_text = text
+            if not text or not text.strip():
+                st.error("⚠️ No se pudo extraer texto del archivo.")
+                st.stop()
 
-        emb_model = load_embeddings_model()
-        vs, chunks = build_vectorstore(text, chunk_size, chunk_overlap, emb_model)
-        st.session_state.vectorstore = vs
-        st.session_state.chunks = chunks
+            st.session_state.doc_text = text
+
+            emb_model = load_embeddings_model()
+            vs, chunks = build_vectorstore(text, chunk_size, chunk_overlap, emb_model)
+            st.session_state.vectorstore = vs
+            st.session_state.chunks = chunks
+
+        except Exception as e:
+            st.error(f"❌ Error procesando el archivo: {e}")
+            st.stop()
 
     st.success(f"✅ Documento listo · {len(chunks)} fragmentos · {len(text):,} caracteres")
 
