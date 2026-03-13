@@ -264,7 +264,7 @@ with st.sidebar:
     st.markdown("**Modelo**")
     model_name = st.selectbox(
         "Model Select",
-        ["llama3-70b-8192", "mixtral-8x7b-32768", "llama3-8b-8192"],
+        ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192"],
         label_visibility="collapsed"
     )
 
