@@ -1,0 +1,10 @@
+streamlit
+langchain
+langchain-groq
+langchain-community
+faiss-cpu
+PyPDF2
+sentence-transformers
+Pillow
+numpy
+scikit-learn
